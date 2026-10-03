@@ -163,6 +163,12 @@ fi
 DROP_FLAGS=$(tmux show-option -gqv @assistant-resurrect-drop-flags 2>/dev/null || true)
 # shellcheck disable=SC2034 # consumed by the shared replay policy
 DROP_ENV=$(tmux show-option -gqv @assistant-resurrect-drop-env 2>/dev/null || true)
+# Opt-in: let the pane shell resolve the tool, so wrapper functions and aliases
+# add their launch flags. Commands routed through `env` or Nushell keep the bypass.
+RESOLVE_THROUGH_SHELL=0
+case "$(tmux show-option -gqv @assistant-resurrect-resolve-through-shell 2>/dev/null || true)" in
+on | yes | true | 1) RESOLVE_THROUGH_SHELL=1 ;;
+esac
 
 # Wait for panes to be fully initialized after resurrect restore
 sleep 2
@@ -524,7 +530,8 @@ while read -r entry; do
 
 	# Bypass aliases/functions without relying on POSIX assignment-prefix syntax,
 	# which csh/tcsh reject. Nushell uses `^` for an external command and
-	# `with-env` for scoped environment changes.
+	# `with-env` for scoped environment changes. With RESOLVE_THROUGH_SHELL,
+	# commands that need no env launcher go to the shell without the bypass.
 	# Build log_cmd in parallel with the env-values redacted to VAR=***, so
 	# captured credentials never leak into the restore log.
 	log_cmd="$resume_cmd"
@@ -549,6 +556,9 @@ while read -r entry; do
 	*)
 		if [ -n "$env_prefix" ] || [ "$force_env" -eq 1 ]; then
 			resume_cmd="${env_launcher}${env_unset_args} ${env_prefix}${resume_cmd#command }"
+		elif [ "$RESOLVE_THROUGH_SHELL" -eq 1 ]; then
+			resume_cmd="${resume_cmd#command }"
+			log_cmd="$resume_cmd"
 		fi
 		if [ -n "$redacted_env_prefix" ]; then
 			# Mirror whatever launcher the resume line above used, so the log

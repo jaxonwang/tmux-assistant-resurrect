@@ -217,6 +217,7 @@ show-option)
 	@assistant-resurrect-claude-drop-env) printf '%s\n' "${MOCK_CLAUDE_DROP_ENV:-}" ;;
 	@assistant-resurrect-relaunch) printf '%s\n' "${MOCK_RELAUNCH_ENABLED:-on}" ;;
 	@assistant-resurrect-relaunch-allow-file) printf '%s\n' "${MOCK_VOUCHER:-}" ;;
+	@assistant-resurrect-resolve-through-shell) printf '%s\n' "${MOCK_RESOLVE_THROUGH_SHELL:-}" ;;
 	esac
 	;;
 clear-history)
@@ -1139,6 +1140,63 @@ mv "$SANDBOX/copilot.json" "$RESURRECT_DIR/assistant-sessions.json"
 run_restore
 assert_eq 'conflicting required state root sends no command' '' "$(cat "$TMUX_LOG")"
 assert_contains 'conflicting required state root is diagnosed' "$RESTORE_OUTPUT" 'cannot drop COPILOT_HOME'
+
+echo "== opt-in resolution through the pane shell =="
+export MOCK_PANES='%1|0|0|wrap-zsh
+%2|0|0|wrap-bash
+%3|0|0|wrap-tcsh'
+export MOCK_SHELLS='%1|zsh
+%2|bash
+%3|tcsh'
+export MOCK_CAPTURE_ENV='' MOCK_DROP_ENV='' MOCK_DROP_FLAGS='' MOCK_EXEC_SHELL=''
+export MOCK_CLAUDE_DROP_ENV='' MOCK_CLAUDE_DROP_FLAGS=''
+export MOCK_RESOLVE_THROUGH_SHELL='on'
+jq -n '{sessions:[
+  {pane:"wrap-zsh:0.0",tool:"claude",session_id:"sid-wrap-zsh",cwd:""},
+  {pane:"wrap-bash:0.0",tool:"codex",session_id:"sid-wrap-bash",cwd:""},
+  {pane:"wrap-tcsh:0.0",tool:"claude",session_id:"sid-wrap-tcsh",cwd:""}
+]}' >"$RESURRECT_DIR/assistant-sessions.json"
+run_restore
+assert_contains "zsh pane gets claude without the command builtin" "$(cat "$TMUX_LOG")" \
+	"send-keys|%1|claude --resume 'sid-wrap-zsh'"
+assert_contains "bash pane gets codex without the command builtin" "$(cat "$TMUX_LOG")" \
+	"send-keys|%2|codex resume 'sid-wrap-bash'"
+assert_contains "tcsh keeps the alias-safe env launcher" "$(cat "$TMUX_LOG")" \
+	"send-keys|%3|\\env claude --resume 'sid-wrap-tcsh'"
+assert_not_contains "no pane receives the command builtin" "$(cat "$TMUX_LOG")" "command "
+assert_contains "the log records the command that was sent" \
+	"$(cat "$RESURRECT_DIR/assistant-restore.log")" "cmd: claude --resume 'sid-wrap-zsh'"
+
+export MOCK_DROP_ENV='ANTHROPIC_MODEL'
+run_restore
+assert_contains "dropped env vars keep the env launcher" "$(cat "$TMUX_LOG")" \
+	"send-keys|%1|env -u 'ANTHROPIC_MODEL' claude --resume 'sid-wrap-zsh'"
+export MOCK_DROP_ENV='' MOCK_RESOLVE_THROUGH_SHELL='off'
+run_restore
+assert_contains "the off value keeps the command builtin" "$(cat "$TMUX_LOG")" \
+	"send-keys|%1|command claude --resume 'sid-wrap-zsh'"
+
+# Run the sent text in a real bash. A wrapper function must run and reach the
+# binary on PATH. Without a function, the binary on PATH must run directly.
+export MOCK_PANES='%1|0|0|wrap-exec' MOCK_SHELLS='%1|bash' MOCK_EXEC_SHELL=bash
+export MOCK_RESOLVE_THROUGH_SHELL='on'
+jq -n --arg cwd "$SANDBOX" '{sessions:[
+  {pane:"wrap-exec:0.0",tool:"claude",session_id:"sid-wrap-exec",cwd:$cwd}
+]}' >"$RESURRECT_DIR/assistant-sessions.json"
+export WRAPPER_MARKER="$SANDBOX/wrapper.marker"
+claude() { printf 'wrapper=%s\n' "$*" >>"$WRAPPER_MARKER"; command claude --from-wrapper "$@"; }
+export -f claude
+run_restore
+assert_contains "the pane shell runs the claude wrapper function" \
+	"$(cat "$WRAPPER_MARKER" 2>/dev/null)" "wrapper=--resume sid-wrap-exec"
+assert_contains "the wrapper reaches the claude binary with its flag" "$(cat "$ASSISTANT_MARKER")" "arg=--from-wrapper"
+assert_contains "the wrapper runs in the saved cwd" "$(cat "$ASSISTANT_MARKER")" "cwd=$SANDBOX"
+unset -f claude
+rm -f "$WRAPPER_MARKER"
+run_restore
+assert_contains "without a wrapper the claude binary on PATH runs" "$(cat "$ASSISTANT_MARKER")" "arg=sid-wrap-exec"
+assert_eq "no wrapper runs after the function is removed" "" "$(cat "$WRAPPER_MARKER" 2>/dev/null)"
+export MOCK_EXEC_SHELL='' MOCK_RESOLVE_THROUGH_SHELL=''
 
 echo
 # This suite is already run on Linux, macOS and the Windows portability canary.

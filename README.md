@@ -686,6 +686,27 @@ set -g @assistant-resurrect-relaunch 'off'
 set -g @assistant-resurrect-relaunch-allow-file '/path/to/assistant-relaunch-allow.txt'
 ```
 
+### Wrapper functions and aliases
+
+Restore sends `command <name> ...`, so a shell function or alias with the same
+command name (`claude`, `codex`, `agent`, and so on) does not run. If such a
+wrapper adds launch flags that the saved process arguments cannot carry (for
+example, a `claude` function that selects an AWS profile), let the pane shell
+resolve the command:
+
+```bash
+set -g @assistant-resurrect-resolve-through-shell 'on'
+```
+
+The option is off by default. It applies to every assistant, to session resumes
+and to vouched relaunches, in POSIX shells and fish. Restore still bypasses
+wrappers for commands that it must run through `env` (captured or dropped
+environment variables, a saved `COPILOT_HOME`, csh/tcsh) and for Nushell.
+
+The wrapper decides the flags of every restored session. If it adds a
+permission grant such as `--dangerously-skip-permissions`, each restored session
+gets that grant, also a session that started without it.
+
 ### PATH in restricted environments (NixOS, systemd services)
 
 When tmux runs as a systemd user service, the server inherits a stripped-down
