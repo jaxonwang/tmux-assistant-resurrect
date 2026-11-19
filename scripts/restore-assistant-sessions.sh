@@ -169,6 +169,28 @@ RESOLVE_THROUGH_SHELL=0
 case "$(tmux show-option -gqv @assistant-resurrect-resolve-through-shell 2>/dev/null || true)" in
 on | yes | true | 1) RESOLVE_THROUGH_SHELL=1 ;;
 esac
+# Opt-in: the first prompt of each resumed Claude Code and Codex session, for
+# example a note that the host rebooted. Restore types the prompt into the pane
+# shell, and the save hook parses it again in the space-joined process
+# arguments. Only plain words on one line survive both: a word that starts
+# with "-" or holds "--" reads as an option, the word "resume" before a space
+# reads as the Codex session selector, and one word alone can name a
+# subcommand.
+resume_prompt_problem() {
+	case "$1" in
+	*[[:cntrl:]\\]*) echo "a control character or a backslash" ;;
+	-* | *" -"* | *--*) echo "a word that starts with '-' or holds '--'" ;;
+	*"resume "*) echo "'resume' before a space" ;;
+	*[!\ ]" "*[!\ ]*) ;;
+	*) echo "less than two words" ;;
+	esac
+}
+RESUME_PROMPT=$(tmux show-option -gqv @assistant-resurrect-resume-prompt 2>/dev/null || true)
+resume_problem=$(resume_prompt_problem "$RESUME_PROMPT")
+if [ -n "$RESUME_PROMPT" ] && [ -n "$resume_problem" ]; then
+	log "@assistant-resurrect-resume-prompt has $resume_problem, so restore sends no prompt"
+	RESUME_PROMPT=""
+fi
 
 # Wait for panes to be fully initialized after resurrect restore
 sleep 2
@@ -496,6 +518,11 @@ while read -r entry; do
 	*)
 		log "unknown tool '$tool' for pane $pane, skipping"
 		continue
+		;;
+	esac
+	case "$tool" in
+	claude | codex)
+		[ -z "$RESUME_PROMPT" ] || resume_cmd="${resume_cmd} $(shell_quote "$pane_cmd" "$RESUME_PROMPT")"
 		;;
 	esac
 	fi

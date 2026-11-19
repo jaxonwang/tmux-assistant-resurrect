@@ -218,6 +218,7 @@ show-option)
 	@assistant-resurrect-relaunch) printf '%s\n' "${MOCK_RELAUNCH_ENABLED:-on}" ;;
 	@assistant-resurrect-relaunch-allow-file) printf '%s\n' "${MOCK_VOUCHER:-}" ;;
 	@assistant-resurrect-resolve-through-shell) printf '%s\n' "${MOCK_RESOLVE_THROUGH_SHELL:-}" ;;
+	@assistant-resurrect-resume-prompt) printf '%s\n' "${MOCK_RESUME_PROMPT:-}" ;;
 	esac
 	;;
 clear-history)
@@ -1197,6 +1198,51 @@ run_restore
 assert_contains "without a wrapper the claude binary on PATH runs" "$(cat "$ASSISTANT_MARKER")" "arg=sid-wrap-exec"
 assert_eq "no wrapper runs after the function is removed" "" "$(cat "$WRAPPER_MARKER" 2>/dev/null)"
 export MOCK_EXEC_SHELL='' MOCK_RESOLVE_THROUGH_SHELL=''
+
+echo "== opt-in first prompt of resumed sessions =="
+NOTE='The host rebooted. Check your work.'
+export MOCK_PANES='%1|0|0|note-claude
+%2|0|0|note-codex
+%3|0|0|note-pi'
+export MOCK_SHELLS='%1|zsh
+%2|bash
+%3|zsh'
+export MOCK_RESUME_PROMPT="$NOTE"
+jq -n '{sessions:[
+  {pane:"note-claude:0.0",tool:"claude",session_id:"sid-note-claude",cwd:""},
+  {pane:"note-codex:0.0",tool:"codex",session_id:"sid-note-codex",cwd:""},
+  {pane:"note-pi:0.0",tool:"pi",session_id:"sid-note-pi",cwd:""}
+]}' >"$RESURRECT_DIR/assistant-sessions.json"
+run_restore
+assert_contains "claude gets the prompt after its session id" "$(cat "$TMUX_LOG")" \
+	"send-keys|%1|command claude --resume 'sid-note-claude' '$NOTE'"
+assert_contains "codex gets the prompt after its session id" "$(cat "$TMUX_LOG")" \
+	"send-keys|%2|command codex resume 'sid-note-codex' '$NOTE'"
+assert_contains "pi resumes" "$(cat "$TMUX_LOG")" "send-keys|%3|command pi --session 'sid-note-pi'"
+assert_not_contains "pi gets no prompt" "$(cat "$TMUX_LOG")" "'sid-note-pi' '"
+
+# Run the sent text in a real bash: the prompt reaches claude as one literal argument.
+export MOCK_PANES='%1|0|0|note-exec' MOCK_SHELLS='%1|bash' MOCK_EXEC_SHELL=bash
+export MOCK_RESUME_PROMPT="It's \$HOME; \`date\` \"quoted\""
+jq -n '{sessions:[{pane:"note-exec:0.0",tool:"claude",session_id:"sid-note-exec",cwd:""}]}' \
+	>"$RESURRECT_DIR/assistant-sessions.json"
+run_restore
+assert_contains "the prompt follows the session id" "$(cat "$ASSISTANT_MARKER")" "arg=sid-note-exec
+arg=$MOCK_RESUME_PROMPT"
+
+# A prompt that the pane shell or the save hook can misread is not sent.
+export MOCK_EXEC_SHELL=''
+for bad in "Check whether --model is set" "-x first" "notes--model=x ok" "Then resume work" "mcp" " mcp " \
+	$'two\nlines' $'a\ttab' 'ends in \\'; do
+	export MOCK_RESUME_PROMPT="$bad"
+	run_restore
+	assert_contains "unsafe prompt [$bad] still resumes" "$(cat "$TMUX_LOG")" \
+		"send-keys|%1|command claude --resume 'sid-note-exec'"
+	assert_not_contains "unsafe prompt [$bad] is not sent" "$(cat "$TMUX_LOG")" "'sid-note-exec' "
+	assert_contains "unsafe prompt [$bad] is logged" \
+		"$(cat "$RESURRECT_DIR/assistant-restore.log")" "so restore sends no prompt"
+done
+export MOCK_RESUME_PROMPT=''
 
 echo
 # This suite is already run on Linux, macOS and the Windows portability canary.

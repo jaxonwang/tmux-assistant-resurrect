@@ -707,6 +707,34 @@ The wrapper decides the flags of every restored session. If it adds a
 permission grant such as `--dangerously-skip-permissions`, each restored session
 gets that grant, also a session that started without it.
 
+### A first prompt for resumed sessions
+
+A resumed session does not know that its earlier process stopped, together with
+the background commands and subagents of that process. To tell it, set a prompt.
+Restore then gives it to each Claude Code and Codex session as the first prompt
+of the resumed session:
+
+```bash
+set -g @assistant-resurrect-resume-prompt 'tmux restored this session after a restart. Check your background work.'
+```
+
+The option is empty by default, and restore then sends no prompt. Other
+assistants do not get the prompt. Restore types the prompt into the pane shell,
+and the prompt stays in the process arguments of the resumed session, which the
+save hook parses again. Use two or more plain words on one line. Restore drops
+a prompt that has a control character, a backslash, a word that starts with
+`-`, `--`, or `resume` before a space (the Codex session selector), and a prompt
+of one word, which Claude Code can read as a subcommand. It writes the reason
+in the restore log. Without `/proc` (macOS), the save hook reads the arguments
+without their boundaries, and an option with several values, such as
+`--allowedTools`, can take the words of the prompt: keep tool names out of the
+prompt there. To write the prompt at the start of each restore, for example with
+the time of the last boot, set it from the pre-restore hook of tmux-resurrect:
+
+```bash
+set -g @resurrect-hook-pre-restore-all 'tmux set -g @assistant-resurrect-resume-prompt "$(~/bin/restore-note)"'
+```
+
 ### PATH in restricted environments (NixOS, systemd services)
 
 When tmux runs as a systemd user service, the server inherits a stripped-down
